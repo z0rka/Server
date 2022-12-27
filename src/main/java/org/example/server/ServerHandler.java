@@ -1,16 +1,13 @@
 package org.example.server;
 
-import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
-import java.net.Socket;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import lombok.NoArgsConstructor;
 import org.example.objects.Client;
@@ -21,74 +18,83 @@ import org.example.objects.Client;
 @NoArgsConstructor
 public class ServerHandler {
 
+  private static final int AMOUNT_OF_THREADS = 30;
   protected static final List<Client> clients = new ArrayList<>();
-  private final ExecutorService readingPool = Executors.newFixedThreadPool(30);
+
   private final AtomicInteger integer = new AtomicInteger(1);
 
 
   /**
    * Thread for each client to read commands
    *
-   * @param socket - client socket
+   * @param client - client
    */
-  private void readerThread(Socket socket) {
+  private void readerThread(Client client) {
     Runnable r = () -> {
-      try (BufferedReader in = new BufferedReader(
-          new InputStreamReader(socket.getInputStream()))
+      try (ObjectInputStream in = new ObjectInputStream(
+          client.getSocket().getInputStream())
       ) {
 
-        String inputLine;
-        while ((inputLine = in.readLine()) != null) {
-          checkMessage(socket, inputLine);
+        Object input;
+        while (!client.getSocket().isClosed()) {
+          input = in.readObject();
+          checkMessage(client, input);
         }
 
-      } catch (IOException e) {
+      } catch (IOException | ClassNotFoundException e) {
         e.printStackTrace();
       }
     };
 
-    readingPool.execute(r);
     new Thread(r).start();
   }
 
-
   /**
-   * Check of the command that was sent from client
+   * Method checks what client has sent
    *
-   * @param socket    - client socket
-   * @param inputLine - command
+   * @param client - client
+   * @param input - object that was sent by client
    */
+  private void checkMessage(Client client, Object input) throws IOException {
+    if (input.getClass().equals(String.class) && input.equals("exit")) {
+      client.getSocket().close();
+      clients.remove(client);
 
-  private void checkMessage(Socket socket, String inputLine) {
-    if (inputLine.equals("Exit")) {
-      clients.removeIf(client -> client.getSocket().equals(socket));
+    } else if (input.getClass().equals(File.class)) {
+      clients
+          .stream()
+          .filter(client1 -> client1.equals(client))
+          .findFirst()
+          .ifPresent(client1 -> client1.getFileList().add((File) input));
 
-    } else if (inputLine.contains("-file")) {
-      newFilesAdding(socket, inputLine);
+    } else if (input.getClass().equals(String.class) && input.equals("Show")) {
+      writerToClient(client);
+
     }
-
   }
-
 
   /**
-   * Adding file to the list of files for client
+   * Method writes list of files to rhe client
    *
-   * @param inputLine - name of file
-   * @param socket    - client socket
+   * @param client - client we write to
    */
+  private void writerToClient(Client client) {
+    Runnable r = () ->
+        clients.stream()
+            .filter(client1 -> client1.getName().equals(client.getName())).findFirst().get()
+            .getFileList()
+            .forEach(file -> {
+              try {
+                PrintWriter writer = new PrintWriter(client.getSocket().getOutputStream(), true);
+                writer.write(file.getName());
+              } catch (IOException e) {
+                e.printStackTrace();
+              }
+            });
 
-  private void newFilesAdding(Socket socket, String inputLine) {
-
-    inputLine = inputLine.replace("-file", "");
-    inputLine = inputLine.trim();
-
-    clients
-        .stream().filter(client -> client.getSocket().equals(socket))
-        .findAny()
-        .get()
-        .getFileList()
-        .add(inputLine);
+    new Thread(r).start();
   }
+
 
   /**
    * Informing of other clients that new client has joined
@@ -97,16 +103,18 @@ public class ServerHandler {
    */
 
   private void writerToClients(Client newClient) {
-    Runnable r = () -> clients
-        .forEach(client -> {
-          try (PrintWriter writer =
-              new PrintWriter(client.getSocket().getOutputStream(), true)) {
+    Runnable r = () ->
+        clients.stream()
+            .filter(client -> !client.getName().equals(newClient.getName()))
+            .forEach(client -> {
+              try {
+                PrintWriter writer = new PrintWriter(client.getSocket().getOutputStream(), true);
+                writer.write("Hello! " + newClient.getName());
 
-            writer.write("[SERVER] Welcome " + newClient.getName());
-          } catch (IOException e) {
-            e.printStackTrace();
-          }
-        });
+              } catch (IOException e) {
+                e.printStackTrace();
+              }
+            });
 
     new Thread(r).start();
   }
@@ -122,19 +130,16 @@ public class ServerHandler {
     try (ServerSocket socket = new ServerSocket(8080)) {
       while (!closeServer) {
 
-        Client client = Client.builder().name("Client" + integer.get()).socket(socket.accept())
-            .time(LocalDateTime.now()).build();
-
+        Client client = new Client("Client" + integer.get(), LocalDateTime.now(), socket.accept());
         clients.add(client);
 
+        readerThread(client);
         writerToClients(client);
-        readerThread(client.getSocket());
 
         if (clients.isEmpty()) {
           closeServer = true;
         }
       }
-      readingPool.shutdown();
     } catch (IOException e) {
       e.printStackTrace();
     }
