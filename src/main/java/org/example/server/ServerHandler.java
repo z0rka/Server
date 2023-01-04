@@ -18,6 +18,7 @@ import org.example.objects.Client;
 @NoArgsConstructor
 public class ServerHandler {
 
+  private static final int PORT = 8080;
   protected static final List<Client> clients = new ArrayList<>();
 
   private final AtomicInteger integer = new AtomicInteger(1);
@@ -102,7 +103,7 @@ public class ServerHandler {
 
     boolean closeServer = false;
 
-    try (ServerSocket socket = new ServerSocket(8080)) {
+    try (ServerSocket socket = new ServerSocket(PORT)) {
       while (!closeServer) {
 
         Client client = new Client("Client" + integer.get(), LocalDateTime.now(), socket.accept());
